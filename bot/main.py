@@ -20,6 +20,7 @@ from bot.handlers.conversation import (
     receive_layout_choice,
     receive_photo,
 )
+from bot.handlers.go_live import on_caption_reply, on_confirm_tap, on_go_live_tap, on_regenerate_tap
 from bot.handlers.start import help_command, start
 
 logging.basicConfig(
@@ -61,7 +62,15 @@ def build_application() -> Application:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    # Runs before the conversation's headline handler so replies editing a Go Live
+    # caption preview aren't mistaken for a new headline (see handlers/go_live.py).
+    application.add_handler(
+        MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_caption_reply), group=-1
+    )
     application.add_handler(conversation)
+    application.add_handler(CallbackQueryHandler(on_go_live_tap, pattern=r"^golive:"))
+    application.add_handler(CallbackQueryHandler(on_confirm_tap, pattern=r"^golive_confirm:"))
+    application.add_handler(CallbackQueryHandler(on_regenerate_tap, pattern=r"^golive_regen:"))
     application.add_handler(MessageHandler(filters.PHOTO, _stray_photo), group=1)
     application.add_error_handler(_error_handler)
 

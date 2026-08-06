@@ -16,10 +16,15 @@ style rules, and the decisions behind them).
    pip install -r requirements.txt
    ```
 
-2. Copy `.env.example` to `.env` and fill in the 3 values:
+2. Copy `.env.example` to `.env` and fill in the values:
    - `TELEGRAM_BOT_TOKEN` - from @BotFather
    - `OPENAI_API_KEY`
    - `OPENAI_IMAGE_MODEL` - defaults to `gpt-image-2`, only change if needed
+   - `UPLOAD_POST_API_KEY` / `UPLOAD_POST_PROFILE` - from your
+     [upload-post.com](https://www.upload-post.com/) dashboard; required for the
+     "Go Live" button (image generation still works without these set)
+   - `GO_LIVE_ALLOWED_USER_IDS` - optional, comma-separated Telegram user IDs.
+     Leave empty to let anyone in the group use Go Live.
 
 3. **Required Telegram group setup** (do this before using the bot in the group):
    - Message @BotFather -> `/setprivacy` -> select your bot -> `Disable`.
@@ -48,6 +53,22 @@ In the group (or a DM with the bot):
 
 `/cancel` aborts a request in progress. A request that gets no reply for 5
 minutes times out automatically.
+
+### Go Live (posting to Instagram)
+
+Every generated image is sent with a **Go Live** button:
+
+1. Tap **Go Live** - the bot generates a first-person IG caption (a separate
+   `gpt-4o-mini` call, not the on-image headline text) and posts a preview.
+2. Reply to the caption preview with new text to edit it, or tap
+   **Regenerate** for another AI attempt.
+3. Tap **Confirm & Post** to publish to the PedTalkSports Instagram account
+   via [upload-post.com](https://www.upload-post.com/). On success the bot
+   replies with the live post URL.
+
+The draft (image + caption) expires 30 minutes after the image was generated;
+after that, regenerate the image to post it. If posting fails (API/network
+error) the confirm button stays retryable - no need to regenerate.
 
 ## Notes
 

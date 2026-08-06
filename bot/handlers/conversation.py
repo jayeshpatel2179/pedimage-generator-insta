@@ -6,6 +6,8 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from bot.generation.ai_generator import generate_image
 from bot.generation.prompt_builder import build_prompt
+from bot.go_live import state as go_live_state
+from bot.handlers.go_live import go_live_keyboard
 from bot.utils.image_utils import cleanup, resize_to_final, save_telegram_photo
 from bot.utils.text_utils import parse_emphasis
 
@@ -77,8 +79,19 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
         image_bytes = await generate_image(input_path, prompt)
         output_path = resize_to_final(image_bytes, chat_id)
 
+        # output_path is kept (not cleaned up here) so a later "Go Live" tap can
+        # upload the pre-Telegram-compression file - see go_live/state.py, which
+        # owns its cleanup from here on (on post success, failure retry exhausted
+        # only by expiry, or the 30-minute expiry sweep).
+        draft = go_live_state.create_draft(image_path=output_path, headline=headline, chat_id=chat_id)
+
         with open(output_path, "rb") as final_image:
-            await context.bot.send_photo(chat_id=chat_id, photo=final_image)
+            sent_message = await context.bot.send_photo(
+                chat_id=chat_id, photo=final_image, reply_markup=go_live_keyboard(draft.id)
+            )
+
+        go_live_state.attach_image_message(draft, sent_message.message_id)
+        go_live_state.schedule_expiry_cleanup(context.application, draft.id)
     except Exception:
         logger.exception("Image generation failed for chat_id=%s", chat_id)
         await context.bot.send_message(
@@ -88,5 +101,6 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
                 "or there was a network error). Send a new headline to try again."
             ),
         )
+        cleanup(output_path)
     finally:
-        cleanup(input_path, output_path)
+        cleanup(input_path)
