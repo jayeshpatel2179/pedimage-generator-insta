@@ -20,7 +20,13 @@ from bot.handlers.conversation import (
     receive_layout_choice,
     receive_photo,
 )
-from bot.handlers.go_live import on_caption_reply, on_confirm_tap, on_go_live_tap, on_regenerate_tap
+from bot.handlers.go_live import (
+    on_caption_reply,
+    on_cancel_tap,
+    on_confirm_tap,
+    on_go_live_tap,
+    on_regenerate_tap,
+)
 from bot.handlers.start import help_command, start
 
 logging.basicConfig(
@@ -71,6 +77,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(on_go_live_tap, pattern=r"^golive:"))
     application.add_handler(CallbackQueryHandler(on_confirm_tap, pattern=r"^golive_confirm:"))
     application.add_handler(CallbackQueryHandler(on_regenerate_tap, pattern=r"^golive_regen:"))
+    application.add_handler(CallbackQueryHandler(on_cancel_tap, pattern=r"^golive_cancel:"))
     application.add_handler(MessageHandler(filters.PHOTO, _stray_photo), group=1)
     application.add_error_handler(_error_handler)
 

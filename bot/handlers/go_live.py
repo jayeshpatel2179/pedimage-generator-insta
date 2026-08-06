@@ -34,7 +34,8 @@ def _confirm_keyboard(draft_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("✅ Confirm & Post", callback_data=f"golive_confirm:{draft_id}"),
                 InlineKeyboardButton("\U0001f504 Regenerate", callback_data=f"golive_regen:{draft_id}"),
-            ]
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"golive_cancel:{draft_id}")],
         ]
     )
 
@@ -258,6 +259,39 @@ async def _do_post(context, draft: state.GoLiveDraft) -> None:
 
     cleanup(draft.image_path)
     state.pop_draft(draft.id)
+
+
+async def on_cancel_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    draft_id = query.data.split(":", 1)[1]
+
+    if not _is_allowed(user.id):
+        await query.answer("You're not authorized to publish to Instagram.", show_alert=True)
+        return
+
+    draft = state.get_draft(draft_id)
+    if draft is None:
+        await query.answer(_EXPIRED_TEXT, show_alert=True)
+        return
+
+    async with draft.lock:
+        if draft.status == "posting":
+            await query.answer("Already posting - can't cancel now.", show_alert=False)
+            return
+        if draft.status == "posted":
+            await query.answer("Already posted.", show_alert=False)
+            return
+        if draft.status != "awaiting_confirm":
+            await query.answer("Hang on, still preparing the caption.", show_alert=False)
+            return
+
+        state.pop_draft(draft.id)
+        cleanup(draft.image_path)
+        await query.answer()
+        await query.edit_message_text("❌ Go Live cancelled. Regenerate the image to post it.")
+
+    await _safe_edit_image_keyboard(context, draft, None)
 
 
 async def on_caption_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
