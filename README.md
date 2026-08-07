@@ -1,7 +1,8 @@
 # PedTalkSports Instagram Image Bot
 
-Telegram bot that turns a headline + a player photo into a PedTalkSports-branded
-Instagram graphic using OpenAI's `gpt-image-2` image-edit endpoint.
+Telegram bot that turns a headline + a source image (a single player photo, or an
+existing multi-player collage/graphic) into a PedTalkSports-branded Instagram
+graphic using OpenAI's `gpt-image-2` image-edit endpoint.
 
 See `PROJECT_SPEC.md` for the full design (architecture, conversation flow, brand
 style rules, and the decisions behind them).
@@ -46,10 +47,13 @@ In the group (or a DM with the bot):
    maroon/red emphasis, e.g.:
    `Performance so good he rinsed the **"rigged" narrative** in one match`
 2. Tap "Text on the Left" or "Text on the Right".
-3. Send the player photo.
+3. Send the image - either a single player photo or an existing multi-player
+   collage/graphic. Either way it's used as-is (no cropping to a single
+   player); only the text panel is generated and merged onto the chosen side.
 4. Wait - the bot generates the graphic in the background and posts it back
-   to the chat when ready. Multiple people can do this at the same time; each
-   person's request is tracked independently.
+   to the chat, followed by a suggested caption with 3-4 hashtags. Multiple
+   people can do this at the same time; each person's request is tracked
+   independently.
 
 `/cancel` aborts a request in progress. A request that gets no reply for 5
 minutes times out automatically.
