@@ -98,7 +98,7 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
         go_live_state.schedule_expiry_cleanup(context.application, draft.id)
 
         try:
-            caption, hashtags = await generate_caption_with_hashtags(headline)
+            caption, hashtags = await generate_caption_with_hashtags(headline, output_path)
             caption_text = f"{caption}\n\n{' '.join(hashtags)}" if hashtags else caption
             await context.bot.send_message(
                 chat_id=chat_id,

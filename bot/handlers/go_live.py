@@ -106,7 +106,7 @@ async def on_go_live_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _produce_caption_preview(context, draft: state.GoLiveDraft) -> None:
     try:
-        caption = await generate_caption(draft.headline)
+        caption = await generate_caption(draft.headline, draft.image_path)
     except Exception:
         logger.exception("Caption generation failed for draft %s", draft.id)
         async with draft.lock:
@@ -169,7 +169,7 @@ async def on_regenerate_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def _regenerate_caption(context, draft: state.GoLiveDraft) -> None:
     try:
-        caption = await generate_caption(draft.headline)
+        caption = await generate_caption(draft.headline, draft.image_path)
     except Exception:
         logger.exception("Caption regeneration failed for draft %s", draft.id)
         async with draft.lock:
