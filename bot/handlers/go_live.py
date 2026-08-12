@@ -8,6 +8,7 @@ from bot.config import GO_LIVE_ALLOWED_USER_IDS
 from bot.go_live import state
 from bot.go_live.caption_generator import generate_caption
 from bot.go_live.uploadpost_client import UploadPostError, upload_photo_to_instagram
+from bot.handlers.website import website_add_summary_keyboard
 from bot.utils.image_utils import cleanup
 
 logger = logging.getLogger(__name__)
@@ -252,8 +253,16 @@ async def _do_post(context, draft: state.GoLiveDraft) -> None:
     async with draft.lock:
         draft.status = "posted"
 
+    text = (
+        f"✅ Posted to Instagram!\n{url}"
+        if url
+        else "✅ Posted to Instagram! (Upload-Post is still finalizing it in the background - check the account shortly for the live link.)"
+    )
     await context.bot.edit_message_text(
-        chat_id=draft.chat_id, message_id=draft.caption_message_id, text=f"✅ Posted to Instagram!\n{url}"
+        chat_id=draft.chat_id,
+        message_id=draft.caption_message_id,
+        text=text,
+        reply_markup=website_add_summary_keyboard(),
     )
     await _safe_edit_image_keyboard(context, draft, None)
 

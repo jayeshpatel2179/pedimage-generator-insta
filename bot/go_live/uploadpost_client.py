@@ -27,29 +27,46 @@ def _upload_sync(image_path: Path, caption: str) -> dict:
     )
 
 
-def _extract_instagram_url(response: dict) -> str:
-    results = response.get("results") if isinstance(response, dict) else None
-    instagram_result = results.get("instagram") if isinstance(results, dict) else None
-
-    if not isinstance(instagram_result, dict):
+def _extract_instagram_url(response: dict) -> str | None:
+    """Returns the published post URL, or None if Upload-Post accepted the post but only
+    confirms it asynchronously (see the "backgrounded" shape below - no URL available yet)."""
+    if not isinstance(response, dict):
         raise UploadPostError(f"Unexpected response from Upload-Post: {response}")
 
-    if instagram_result.get("success") is False:
-        error = instagram_result.get("error") or "unknown error"
-        raise UploadPostError(f"Instagram publish failed: {error}")
+    results = response.get("results")
+    if isinstance(results, dict):
+        instagram_result = results.get("instagram")
+        if not isinstance(instagram_result, dict):
+            raise UploadPostError(f"Unexpected response from Upload-Post: {response}")
 
-    url = instagram_result.get("url")
-    if not url:
-        raise UploadPostError(f"Upload-Post didn't return a post URL: {response}")
+        if instagram_result.get("success") is False:
+            error = instagram_result.get("error") or "unknown error"
+            raise UploadPostError(f"Instagram publish failed: {error}")
 
-    return url
+        url = instagram_result.get("url")
+        if not url:
+            raise UploadPostError(f"Upload-Post didn't return a post URL: {response}")
+
+        return url
+
+    # Upload-Post sometimes hands a slow request off to a background worker instead of
+    # returning the synchronous {"results": {...}} shape above - it still reports success
+    # (per its own "success": true), just without a URL yet. See request_id/job_id for
+    # status polling (https://docs.upload-post.com/api/upload-status), which itself
+    # doesn't expose a post URL either - so there's nothing further to wait for here.
+    if response.get("success") is True and (response.get("request_id") or response.get("job_id")):
+        return None
+
+    raise UploadPostError(f"Unexpected response from Upload-Post: {response}")
 
 
-async def upload_photo_to_instagram(image_path: Path, caption: str) -> str:
+async def upload_photo_to_instagram(image_path: Path, caption: str) -> str | None:
     """Publish an already-generated image to the PedTalkSports Instagram feed.
 
     Runs the (blocking, requests-based) SDK call in a thread so the bot's
-    event loop keeps serving other chats while it's in flight.
+    event loop keeps serving other chats while it's in flight. Returns the
+    published post URL, or None if Upload-Post only confirmed the post
+    asynchronously (see _extract_instagram_url).
     """
     try:
         response = await asyncio.to_thread(_upload_sync, image_path, caption)

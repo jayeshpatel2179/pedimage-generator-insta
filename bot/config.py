@@ -23,6 +23,12 @@ OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
 UPLOAD_POST_API_KEY = os.getenv("UPLOAD_POST_API_KEY")
 UPLOAD_POST_PROFILE = os.getenv("UPLOAD_POST_PROFILE")
 
+# Same posture as UPLOAD_POST_API_KEY above: not required at startup, only
+# surfaced as an in-chat error when "Add Website Summary" is actually used
+# (see website/website_client.py).
+WEBSITE_UPLOAD_API_KEY = os.getenv("WEBSITE_UPLOAD_API_KEY")
+WEBSITE_UPLOAD_URL = os.getenv("WEBSITE_UPLOAD_URL") or "https://www.pedtalkssports.com/api/instagram/upload"
+
 
 def _parse_user_ids(raw: str | None) -> frozenset[int]:
     if not raw:
@@ -34,6 +40,8 @@ def _parse_user_ids(raw: str | None) -> frozenset[int]:
 # unrestricted - anyone in the group can use it, same as image generation
 # (decided this way for PedTalkSports: the group is small and trusted, and the
 # feature is meant for whichever editor is around, not one fixed person).
+# Also gates the website posting flow's "Add Website Summary" and "Go Live
+# Website" buttons - same publish-externally trust tier as Instagram Go Live.
 GO_LIVE_ALLOWED_USER_IDS = _parse_user_ids(os.getenv("GO_LIVE_ALLOWED_USER_IDS"))
 
 # Hardcoded by design (see PROJECT_SPEC.md) - not meant to vary at runtime.
@@ -44,5 +52,13 @@ TEMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "temp"
 LOG_LEVEL = "INFO"
 CAPTION_MODEL = "gpt-4o-mini"
 GO_LIVE_DRAFT_EXPIRY_SECONDS = 30 * 60
+
+# Website posting flow (bot/website/, bot/handlers/website.py).
+WEBSITE_SUMMARY_WORD_MIN = 50
+WEBSITE_SUMMARY_WORD_MAX = 60
+WEBSITE_SUMMARY_HISTORY_LIMIT = 3  # how many previous rewrites get fed back in to steer regenerations away from repeats
+WEBSITE_DRAFT_EXPIRY_SECONDS = 30 * 60
+WEBSITE_PENDING_EXPIRY_SECONDS = 30 * 60  # how long "waiting for your description photo" stays armed after tapping the button
+WEBSITE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,6 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes, ConversationHandl
 from bot.generation.ai_generator import generate_image
 from bot.generation.prompt_builder import build_prompt
 from bot.go_live import state as go_live_state
-from bot.go_live.caption_generator import generate_caption_with_hashtags
 from bot.handlers.go_live import go_live_keyboard
 from bot.utils.image_utils import cleanup, resize_to_final, save_telegram_photo
 from bot.utils.text_utils import parse_emphasis
@@ -77,6 +76,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, layout_side) -> None:
     input_path = None
     output_path = None
+    draft = None
     try:
         input_path = await save_telegram_photo(photo_file, chat_id)
         prompt = build_prompt(headline, emphasis, layout_side)
@@ -96,19 +96,14 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
 
         go_live_state.attach_image_message(draft, sent_message.message_id)
         go_live_state.schedule_expiry_cleanup(context.application, draft.id)
-
-        try:
-            caption, hashtags = await generate_caption_with_hashtags(headline, output_path)
-            caption_text = f"{caption}\n\n{' '.join(hashtags)}" if hashtags else caption
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"Suggested caption:\n\n{caption_text}",
-                reply_to_message_id=sent_message.message_id,
-            )
-        except Exception:
-            logger.exception("Caption/hashtag suggestion failed for chat_id=%s", chat_id)
     except Exception:
         logger.exception("Image generation failed for chat_id=%s", chat_id)
+        if draft is not None:
+            # send_photo may have actually delivered the message server-side despite a
+            # client-side error (e.g. a timeout waiting for the response) - drop the
+            # draft so a tap on that stray Go Live button fails gracefully ("draft
+            # expired") instead of crashing on the file cleanup() is about to do below.
+            go_live_state.pop_draft(draft.id)
         await context.bot.send_message(
             chat_id=chat_id,
             text=(

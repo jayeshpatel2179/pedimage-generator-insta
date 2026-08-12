@@ -24,8 +24,13 @@ style rules, and the decisions behind them).
    - `UPLOAD_POST_API_KEY` / `UPLOAD_POST_PROFILE` - from your
      [upload-post.com](https://www.upload-post.com/) dashboard; required for the
      "Go Live" button (image generation still works without these set)
+   - `WEBSITE_UPLOAD_API_KEY` - required for the "Add Website Summary" /
+     "Go Live Website" flow (everything else, including Instagram Go Live,
+     still works without it)
+   - `WEBSITE_UPLOAD_URL` - optional override; defaults to
+     `https://www.pedtalkssports.com/api/instagram/upload`
    - `GO_LIVE_ALLOWED_USER_IDS` - optional, comma-separated Telegram user IDs.
-     Leave empty to let anyone in the group use Go Live.
+     Leave empty to let anyone in the group use Go Live / website posting.
 
 3. **Required Telegram group setup** (do this before using the bot in the group):
    - Message @BotFather -> `/setprivacy` -> select your bot -> `Disable`.
@@ -51,9 +56,8 @@ In the group (or a DM with the bot):
    collage/graphic. Either way it's used as-is (no cropping to a single
    player); only the text panel is generated and merged onto the chosen side.
 4. Wait - the bot generates the graphic in the background and posts it back
-   to the chat, followed by a suggested caption with 3-4 hashtags. Multiple
-   people can do this at the same time; each person's request is tracked
-   independently.
+   to the chat with a **Go Live** button. Multiple people can do this at the
+   same time; each person's request is tracked independently.
 
 `/cancel` aborts a request in progress. A request that gets no reply for 5
 minutes times out automatically.
@@ -73,6 +77,28 @@ Every generated image is sent with a **Go Live** button:
 The draft (image + caption) expires 30 minutes after the image was generated;
 after that, regenerate the image to post it. If posting fails (API/network
 error) the confirm button stays retryable - no need to regenerate.
+
+### Posting to the website
+
+Once a Go Live post to Instagram succeeds, the confirmation message gets an
+**📝 Add Website Summary** button:
+
+1. Tap it - the bot asks you to resend that same image, this time with a
+   **30-40 word plain-text description** of what you want the website copy to
+   say about it, written as the photo's caption.
+2. Send that photo + caption. The bot rewrites it into an exact **50-60 word**
+   summary (a genuine expansion, not just a polish, since your draft is
+   shorter than the target) and posts it back for review with three buttons:
+   - **🌐 Go Live Website** - publishes the image + summary to the PedTalks
+     website.
+   - **🔄 Regenerate** - produces a different 50-60 word rewrite of the same
+     facts without resending the image.
+   - **❌ Abort** - drops the draft, nothing is posted.
+
+This is a separate leg from Instagram Go Live and uses its own 30-minute
+draft expiry. Tapping "Add Website Summary" only arms the *next* photo you
+send for this flow - it doesn't affect normal generation requests, and
+un-tapped buttons never intercept anything.
 
 ## Notes
 
