@@ -107,14 +107,21 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
             go_live_state.pop_draft(draft.id)
 
         if isinstance(exc, OpenAIBadRequestError) and exc.code == "moderation_blocked":
-            # OpenAI's images.edit endpoint refuses to edit photos it recognizes as a real/
-            # public figure (common for this bot, since it's sports players) - this is a
-            # hard server-side policy block, not a transient failure, so say so plainly
-            # instead of the generic "may have refused" message below.
+            # OpenAI's images.edit endpoint can reject either the input photo or its own
+            # generated output on safety grounds - categories/stage vary per request (e.g.
+            # "public-figure" on the input, or "other" on the output), so surface whatever
+            # it actually flagged rather than assuming one reason. This is a hard
+            # server-side policy block, not a transient failure - retrying the exact same
+            # photo/headline is unlikely to help.
+            details = exc.body.get("moderation_details") if isinstance(exc.body, dict) else None
+            categories = details.get("categories") if isinstance(details, dict) else None
+            stage = details.get("moderation_stage") if isinstance(details, dict) else None
+            reason = ", ".join(categories) if categories else "unspecified"
+            stage_text = f" ({stage} stage)" if stage else ""
             text = (
-                "⚠️ OpenAI's safety system blocked this photo - it flagged it as a "
-                "recognizable public figure and won't edit images like that. Try a "
-                "different photo (different angle/crop) and send the headline again."
+                f"⚠️ OpenAI's safety system blocked this generation - flagged as "
+                f"'{reason}'{stage_text}. This is a policy block, not a network hiccup - "
+                "try a different photo and/or reword the headline, then send it again."
             )
         else:
             text = (
