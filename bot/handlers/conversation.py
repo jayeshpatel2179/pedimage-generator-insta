@@ -1,5 +1,6 @@
 import logging
 
+from openai import BadRequestError as OpenAIBadRequestError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationHandlerStop, ContextTypes, ConversationHandler
@@ -96,7 +97,7 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
 
         go_live_state.attach_image_message(draft, sent_message.message_id)
         go_live_state.schedule_expiry_cleanup(context.application, draft.id)
-    except Exception:
+    except Exception as exc:
         logger.exception("Image generation failed for chat_id=%s", chat_id)
         if draft is not None:
             # send_photo may have actually delivered the message server-side despite a
@@ -104,13 +105,23 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
             # draft so a tap on that stray Go Live button fails gracefully ("draft
             # expired") instead of crashing on the file cleanup() is about to do below.
             go_live_state.pop_draft(draft.id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=(
+
+        if isinstance(exc, OpenAIBadRequestError) and exc.code == "moderation_blocked":
+            # OpenAI's images.edit endpoint refuses to edit photos it recognizes as a real/
+            # public figure (common for this bot, since it's sports players) - this is a
+            # hard server-side policy block, not a transient failure, so say so plainly
+            # instead of the generic "may have refused" message below.
+            text = (
+                "⚠️ OpenAI's safety system blocked this photo - it flagged it as a "
+                "recognizable public figure and won't edit images like that. Try a "
+                "different photo (different angle/crop) and send the headline again."
+            )
+        else:
+            text = (
                 "Sorry, that generation failed (the model may have refused the request, "
                 "or there was a network error). Send a new headline to try again."
-            ),
-        )
+            )
+        await context.bot.send_message(chat_id=chat_id, text=text)
         cleanup(output_path)
     finally:
         cleanup(input_path)
