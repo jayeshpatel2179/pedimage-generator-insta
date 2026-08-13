@@ -260,7 +260,9 @@ async def on_website_golive_tap(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _do_post(context, draft: "website_state.WebsiteDraft") -> None:
     try:
-        url = await upload_photo_to_website(draft.image_path, draft.summary)
+        # The upload API's "url" is the raw R2 image asset, not a website post page -
+        # not useful to show the user, so it's intentionally discarded here.
+        await upload_photo_to_website(draft.image_path, draft.summary)
     except WebsiteUploadError as exc:
         logger.exception("Website upload failed for draft %s", draft.id)
         async with draft.lock:
@@ -277,7 +279,7 @@ async def _do_post(context, draft: "website_state.WebsiteDraft") -> None:
         draft.status = "posted"
 
     await context.bot.edit_message_text(
-        chat_id=draft.chat_id, message_id=draft.review_message_id, text=f"✅ Posted to the website!\n{url}"
+        chat_id=draft.chat_id, message_id=draft.review_message_id, text="✅ Posted to the website!"
     )
 
     cleanup(draft.image_path)
