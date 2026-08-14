@@ -36,12 +36,12 @@ def _parse_user_ids(raw: str | None) -> frozenset[int]:
     return frozenset(int(part.strip()) for part in raw.split(",") if part.strip())
 
 
-# Comma-separated Telegram user IDs allowed to tap "Go Live". Empty/unset means
-# unrestricted - anyone in the group can use it, same as image generation
-# (decided this way for PedTalkSports: the group is small and trusted, and the
-# feature is meant for whichever editor is around, not one fixed person).
-# Also gates the website posting flow's "Add Website Summary" and "Go Live
-# Website" buttons - same publish-externally trust tier as Instagram Go Live.
+# Comma-separated Telegram user IDs allowed to publish (the merged Instagram +
+# website Go Live flow). Empty/unset means unrestricted - anyone in the group can
+# use it, same as image generation (decided this way for PedTalkSports: the group
+# is small and trusted, and the feature is meant for whichever editor is around,
+# not one fixed person). Env var name kept as GO_LIVE_ALLOWED_USER_IDS for
+# deployment compatibility even though it now gates the whole publish pipeline.
 GO_LIVE_ALLOWED_USER_IDS = _parse_user_ids(os.getenv("GO_LIVE_ALLOWED_USER_IDS"))
 
 # Hardcoded by design (see PROJECT_SPEC.md) - not meant to vary at runtime.
@@ -51,14 +51,14 @@ CONVERSATION_TIMEOUT_SECONDS = 300
 TEMP_DIR = Path(__file__).resolve().parent.parent / "storage" / "temp"
 LOG_LEVEL = "INFO"
 CAPTION_MODEL = "gpt-4o-mini"
-GO_LIVE_DRAFT_EXPIRY_SECONDS = 30 * 60
 
-# Website posting flow (bot/website/, bot/handlers/website.py).
+# Merged publish flow (bot/publish/, bot/handlers/publish.py): caption+hashtags
+# review, then website summary review, then simultaneous Instagram+website Go Live.
+PUBLISH_DRAFT_EXPIRY_SECONDS = 30 * 60
+
+# Website summary generation (bot/website/summary_generator.py).
 WEBSITE_SUMMARY_WORD_MIN = 50
 WEBSITE_SUMMARY_WORD_MAX = 60
 WEBSITE_SUMMARY_HISTORY_LIMIT = 3  # how many previous rewrites get fed back in to steer regenerations away from repeats
-WEBSITE_DRAFT_EXPIRY_SECONDS = 30 * 60
-WEBSITE_PENDING_EXPIRY_SECONDS = 30 * 60  # how long "waiting for your description photo" stays armed after tapping the button
-WEBSITE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)

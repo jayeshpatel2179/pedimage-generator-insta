@@ -7,8 +7,8 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes, ConversationHandl
 
 from bot.generation.ai_generator import generate_image
 from bot.generation.prompt_builder import build_prompt
-from bot.go_live import state as go_live_state
-from bot.handlers.go_live import go_live_keyboard
+from bot.handlers.publish import begin_publish_flow
+from bot.publish import state as publish_state
 from bot.utils.image_utils import cleanup, resize_to_final, save_telegram_photo
 from bot.utils.text_utils import parse_emphasis
 
@@ -84,27 +84,26 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
         image_bytes = await generate_image(input_path, prompt)
         output_path = resize_to_final(image_bytes, chat_id)
 
-        # output_path is kept (not cleaned up here) so a later "Go Live" tap can
-        # upload the pre-Telegram-compression file - see go_live/state.py, which
-        # owns its cleanup from here on (on post success, failure retry exhausted
-        # only by expiry, or the 30-minute expiry sweep).
-        draft = go_live_state.create_draft(image_path=output_path, headline=headline, chat_id=chat_id)
+        # output_path is kept (not cleaned up here) so the publish flow can upload the
+        # pre-Telegram-compression file to both Instagram and the website - see
+        # publish/state.py, which owns its cleanup from here on (on post success, abort,
+        # or the 30-minute expiry sweep).
+        draft = publish_state.create_draft(image_path=output_path, headline=headline, chat_id=chat_id)
 
         with open(output_path, "rb") as final_image:
-            sent_message = await context.bot.send_photo(
-                chat_id=chat_id, photo=final_image, reply_markup=go_live_keyboard(draft.id)
-            )
+            sent_message = await context.bot.send_photo(chat_id=chat_id, photo=final_image)
 
-        go_live_state.attach_image_message(draft, sent_message.message_id)
-        go_live_state.schedule_expiry_cleanup(context.application, draft.id)
+        publish_state.attach_image_message(draft, sent_message.message_id)
+        publish_state.schedule_expiry_cleanup(context.application, draft.id)
+        await begin_publish_flow(context, draft)
     except Exception as exc:
         logger.exception("Image generation failed for chat_id=%s", chat_id)
         if draft is not None:
             # send_photo may have actually delivered the message server-side despite a
             # client-side error (e.g. a timeout waiting for the response) - drop the
-            # draft so a tap on that stray Go Live button fails gracefully ("draft
+            # draft so a tap on any stray publish button fails gracefully ("draft
             # expired") instead of crashing on the file cleanup() is about to do below.
-            go_live_state.pop_draft(draft.id)
+            publish_state.pop_draft(draft.id)
 
         if isinstance(exc, OpenAIBadRequestError) and exc.code == "moderation_blocked":
             # OpenAI's images.edit endpoint can reject either the input photo or its own

@@ -23,14 +23,14 @@ style rules, and the decisions behind them).
    - `OPENAI_IMAGE_MODEL` - defaults to `gpt-image-2`, only change if needed
    - `UPLOAD_POST_API_KEY` / `UPLOAD_POST_PROFILE` - from your
      [upload-post.com](https://www.upload-post.com/) dashboard; required for the
-     "Go Live" button (image generation still works without these set)
-   - `WEBSITE_UPLOAD_API_KEY` - required for the "Add Website Summary" /
-     "Go Live Website" flow (everything else, including Instagram Go Live,
-     still works without it)
+     Instagram half of **Go Live** (image generation and caption review still
+     work without these set - only the final publish step needs them)
+   - `WEBSITE_UPLOAD_API_KEY` - required for the website half of **Go Live**
+     (everything else, including the Instagram half, still works without it)
    - `WEBSITE_UPLOAD_URL` - optional override; defaults to
      `https://www.pedtalkssports.com/api/instagram/upload`
    - `GO_LIVE_ALLOWED_USER_IDS` - optional, comma-separated Telegram user IDs.
-     Leave empty to let anyone in the group use Go Live / website posting.
+     Leave empty to let anyone in the group publish.
 
 3. **Required Telegram group setup** (do this before using the bot in the group):
    - Message @BotFather -> `/setprivacy` -> select your bot -> `Disable`.
@@ -55,50 +55,51 @@ In the group (or a DM with the bot):
 3. Send the image - either a single player photo or an existing multi-player
    collage/graphic. Either way it's used as-is (no cropping to a single
    player); only the text panel is generated and merged onto the chosen side.
-4. Wait - the bot generates the graphic in the background and posts it back
-   to the chat with a **Go Live** button. Multiple people can do this at the
-   same time; each person's request is tracked independently.
+4. Wait - the bot generates the graphic in the background, posts it back to
+   the chat, and immediately starts the publish review below. Multiple people
+   can do this at the same time; each person's request is tracked
+   independently.
 
 `/cancel` aborts a request in progress. A request that gets no reply for 5
 minutes times out automatically.
 
-### Go Live (posting to Instagram)
+### Publishing (one merged review, then Go Live posts to both platforms)
 
-Every generated image is sent with a **Go Live** button:
+Nothing goes live until you've reviewed and approved *both* the Instagram
+caption and the website summary - the bot never partially posts. The flow has
+two review steps on the same generated image:
 
-1. Tap **Go Live** - the bot generates a first-person IG caption (a separate
-   `gpt-4o-mini` call, not the on-image headline text) and posts a preview.
-2. Reply to the caption preview with new text to edit it, or tap
-   **Regenerate** for another AI attempt.
-3. Tap **Confirm & Post** to publish to the PedTalkSports Instagram account
-   via [upload-post.com](https://www.upload-post.com/). On success the bot
-   replies with the live post URL.
+**1. Instagram caption + hashtags**
 
-The draft (image + caption) expires 30 minutes after the image was generated;
-after that, regenerate the image to post it. If posting fails (API/network
-error) the confirm button stays retryable - no need to regenerate.
+As soon as the image is generated, the bot writes a first-person IG caption +
+3-4 hashtags (a `gpt-4o-mini` vision call grounded on the finished graphic,
+not just the on-image headline text) and posts it for review:
 
-### Posting to the website
+- **✅ Save** - locks the caption in and moves straight on to the website
+  summary (step 2) - nothing is posted to Instagram yet.
+- **🔄 Regenerate** - another AI attempt at the caption, same image.
+- Reply to the caption preview message with new text to edit it directly
+  instead of regenerating.
 
-Once a Go Live post to Instagram succeeds, the confirmation message gets an
-**📝 Add Website Summary** button:
+**2. Website summary**
 
-1. Tap it - the bot asks you to resend that same image, this time with a
-   **30-40 word plain-text description** of what you want the website copy to
-   say about it, written as the photo's caption.
-2. Send that photo + caption. The bot rewrites it into an exact **50-60 word**
-   summary (a genuine expansion, not just a polish, since your draft is
-   shorter than the target) and posts it back for review with three buttons:
-   - **🌐 Go Live Website** - publishes the image + summary to the PedTalks
-     website.
-   - **🔄 Regenerate** - produces a different 50-60 word rewrite of the same
-     facts without resending the image.
-   - **❌ Abort** - drops the draft, nothing is posted.
+Right after you tap Save, the bot reuses the *same* image (no need to resend
+anything) and writes a **50-60 word** website summary grounded on the
+headline + the Instagram caption you just approved, then posts it for review:
 
-This is a separate leg from Instagram Go Live and uses its own 30-minute
-draft expiry. Tapping "Add Website Summary" only arms the *next* photo you
-send for this flow - it doesn't affect normal generation requests, and
-un-tapped buttons never intercept anything.
+- **🚀 Go Live** - publishes to **both** the PedTalkSports Instagram account
+  (via [upload-post.com](https://www.upload-post.com/)) and the PedTalks
+  website **at the same time**. This is the only button that actually
+  publishes anything.
+- **🔄 Regenerate Summary** - a different 50-60 word rewrite of the same
+  facts, same image.
+- **❌ Abort** - drops the whole draft, nothing is posted anywhere.
+
+If Go Live only partially succeeds (one platform posts, the other errors),
+the bot tells you which side already went live and tapping Go Live again
+only retries the side that failed - it never double-posts. The draft expires
+30 minutes after the image was generated; after that, regenerate the image
+to publish it.
 
 ## Notes
 

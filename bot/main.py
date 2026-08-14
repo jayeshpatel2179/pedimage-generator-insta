@@ -20,21 +20,15 @@ from bot.handlers.conversation import (
     receive_layout_choice,
     receive_photo,
 )
-from bot.handlers.go_live import (
+from bot.handlers.publish import (
+    on_abort_tap,
     on_caption_reply,
-    on_cancel_tap,
-    on_confirm_tap,
-    on_go_live_tap,
-    on_regenerate_tap,
+    on_golive_tap,
+    on_regen_caption_tap,
+    on_regen_summary_tap,
+    on_save_tap,
 )
 from bot.handlers.start import help_command, start
-from bot.handlers.website import (
-    on_add_summary_tap,
-    on_photo_for_website,
-    on_website_abort_tap,
-    on_website_golive_tap,
-    on_website_regen_tap,
-)
 
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s", level=LOG_LEVEL
@@ -87,24 +81,17 @@ def build_application() -> Application:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    # Runs before the conversation's headline handler so replies editing a Go Live
-    # caption preview aren't mistaken for a new headline (see handlers/go_live.py).
+    # Runs before the conversation's headline handler so replies editing the caption
+    # preview aren't mistaken for a new headline (see handlers/publish.py).
     application.add_handler(
         MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_caption_reply), group=-1
     )
-    # Also group=-1, ahead of the conversation and the stray-photo catch-all below,
-    # so a photo sent after tapping "Add Website Summary" is routed to the website
-    # flow instead of being treated as a new generation request (see handlers/website.py).
-    application.add_handler(MessageHandler(filters.PHOTO, on_photo_for_website), group=-1)
     application.add_handler(conversation)
-    application.add_handler(CallbackQueryHandler(on_go_live_tap, pattern=r"^golive:"))
-    application.add_handler(CallbackQueryHandler(on_confirm_tap, pattern=r"^golive_confirm:"))
-    application.add_handler(CallbackQueryHandler(on_regenerate_tap, pattern=r"^golive_regen:"))
-    application.add_handler(CallbackQueryHandler(on_cancel_tap, pattern=r"^golive_cancel:"))
-    application.add_handler(CallbackQueryHandler(on_add_summary_tap, pattern=r"^website_add$"))
-    application.add_handler(CallbackQueryHandler(on_website_golive_tap, pattern=r"^website_golive:"))
-    application.add_handler(CallbackQueryHandler(on_website_regen_tap, pattern=r"^website_regen:"))
-    application.add_handler(CallbackQueryHandler(on_website_abort_tap, pattern=r"^website_abort:"))
+    application.add_handler(CallbackQueryHandler(on_save_tap, pattern=r"^pub_save:"))
+    application.add_handler(CallbackQueryHandler(on_regen_caption_tap, pattern=r"^pub_regen_caption:"))
+    application.add_handler(CallbackQueryHandler(on_golive_tap, pattern=r"^pub_golive:"))
+    application.add_handler(CallbackQueryHandler(on_regen_summary_tap, pattern=r"^pub_regen_summary:"))
+    application.add_handler(CallbackQueryHandler(on_abort_tap, pattern=r"^pub_abort:"))
     application.add_handler(MessageHandler(filters.PHOTO, _stray_photo), group=1)
     application.add_error_handler(_error_handler)
 

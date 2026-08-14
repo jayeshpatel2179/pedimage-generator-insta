@@ -34,11 +34,24 @@ These are the fixed visual rules every generated image must follow. They get bak
 3. Bot asks for the player photo.
 4. User sends a photo → bot downloads the highest-resolution file.
 5. Bot sends a "generating…" chat action, fires the generation as a background task (see §7), and continues listening for other users in the meantime.
-6. On success: bot sends the finished image back into the chat as a photo.
+6. On success: bot sends the finished image back into the chat as a photo, then immediately continues into the publish flow (§3.1) — no separate trigger needed.
 7. On failure (API error, safety refusal, network issue): bot sends a plain-language error and lets the user retry from step 1.
 8. `/cancel` aborts the flow at any point. If 5 minutes pass with no reply to the bot's last prompt, the conversation auto-resets (`conversation_timeout=300`, hardcoded).
 
 **Marking emphasis words:** the user wraps words in `**double asterisks**` in their headline message to mark them for maroon/red styling (e.g. `Performance so good he rinsed the **"rigged" narrative** in one match`). Anything not wrapped stays black. This was an open design question — decided in favor of manual marking over auto-detection, since auto-picking "important" words from arbitrary text is unreliable and would produce inconsistent emphasis choices between posts.
+
+### 3.1 Publish Flow (Instagram + website, one merged review)
+
+Added after v1: the generated image is never posted anywhere by itself — it feeds a two-stage review, and a single **Go Live** tap at the end publishes to Instagram and the website simultaneously. Nothing goes live until both stages are approved. See `bot/publish/`, `bot/handlers/publish.py`, and the README's "Publishing" section for the full user-facing walkthrough. Summary:
+
+1. **Caption stage** (automatic, no tap needed to start): right after the image is generated, a `gpt-4o-mini` vision call (`bot/go_live/caption_generator.py`) writes a first-person IG caption + hashtags grounded on the finished graphic. Reviewed with **Save** / **Regenerate**, or edit by replying to the preview message with new text.
+2. **Summary stage** (auto-triggered by Save, reuses the same image — nothing is re-sent): another vision call (`bot/website/summary_generator.py`) writes a 50-60 word website summary grounded on the headline + the approved Instagram caption. Reviewed with **Go Live** / **Regenerate Summary** / **Abort**.
+3. **Go Live**: publishes to Instagram (via upload-post.com, `bot/go_live/uploadpost_client.py`) and the website (via its own upload API, `bot/website/website_client.py`) concurrently. A `PublishDraft` (`bot/publish/state.py`) tracks each platform's posted status independently, so a partial failure (one platform succeeds, the other errors) is retried by tapping Go Live again without double-posting to the side that already succeeded.
+
+Design decisions behind this shape:
+- No live posting happens until both reviews are done, so a bad caption or a bad summary never has to be "fixed after the fact" on a platform.
+- The website summary is grounded on the headline + Instagram caption rather than a hand-typed user draft (an earlier version required resending the photo with a written description) — removed to cut a manual step now that the caption already exists and carries the same facts.
+- Drafts are in-memory only (same posture as image generation state) — lost on redeploy by design, acceptable since regenerating the image is cheap enough to redo the whole flow.
 
 ## 4. Telegram Group Setup Requirements (action items for you, not code)
 
@@ -46,13 +59,19 @@ These are the fixed visual rules every generated image must follow. They get bak
 - After changing the privacy setting, **remove and re-add the bot to the group** — Telegram only applies the change on rejoin.
 - No user allowlist — anyone in the group can trigger the bot. Each generation costs real OpenAI credits (~$0.20–0.35/image); this is an accepted tradeoff since it's a controlled company group, not a public bot.
 
-## 5. Environment Variables (exactly 3)
+## 5. Environment Variables
+
+Only the first three are required at startup; the rest gate the publish flow (§3.1) and are checked at the point they're actually used, so image generation always works even if they're unset.
 
 | Variable | Purpose |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token from BotFather |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_IMAGE_MODEL` | Defaults to `gpt-image-2`; kept swappable without a code change |
+| `UPLOAD_POST_API_KEY` / `UPLOAD_POST_PROFILE` | upload-post.com credentials; required for the Instagram half of Go Live |
+| `WEBSITE_UPLOAD_API_KEY` | Required for the website half of Go Live |
+| `WEBSITE_UPLOAD_URL` | Optional override; defaults to `https://www.pedtalkssports.com/api/instagram/upload` |
+| `GO_LIVE_ALLOWED_USER_IDS` | Optional, comma-separated Telegram user IDs allowed to publish; empty = unrestricted |
 
 ## 6. Hardcoded Configuration Constants (not env vars, by design)
 
@@ -73,14 +92,23 @@ Because `gpt-image-2` calls take several seconds, the actual generation call is 
 pedtalks-insta-bot/
 ├── bot/
 │   ├── main.py                  # Application builder, registers handlers, starts polling
-│   ├── config.py                # loads the 3 env vars + hardcoded constants
+│   ├── config.py                # loads env vars + hardcoded constants
 │   ├── handlers/
 │   │   ├── start.py             # /start, /help
-│   │   ├── conversation.py      # text -> layout choice -> photo -> generate
+│   │   ├── conversation.py      # text -> layout choice -> photo -> generate -> hands off to publish.py
+│   │   ├── publish.py           # merged caption review -> summary review -> simultaneous Go Live (§3.1)
 │   │   └── cancel.py
 │   ├── generation/
 │   │   ├── ai_generator.py      # gpt-image-2 images.edit wrapper
 │   │   └── prompt_builder.py    # builds the full brand-styled prompt from headline + emphasis + layout side
+│   ├── publish/
+│   │   └── state.py             # PublishDraft: in-memory caption/summary/posted-status tracking
+│   ├── go_live/
+│   │   ├── caption_generator.py # gpt-4o-mini vision call -> IG caption + hashtags
+│   │   └── uploadpost_client.py # upload-post.com publish wrapper
+│   ├── website/
+│   │   ├── summary_generator.py # gpt-4o-mini vision call -> 50-60 word website summary
+│   │   └── website_client.py    # website upload API wrapper
 │   └── utils/
 │       ├── image_utils.py       # download photo, resize 1024->1080, format handling
 │       └── text_utils.py        # parses **emphasis** markup out of the raw headline
@@ -95,7 +123,7 @@ pedtalks-insta-bot/
 
 ## 9. Dependencies
 
-`python-telegram-bot` (v21+, async), `openai` (v1.x SDK), `python-dotenv`, `Pillow` (only for the final 1024→1080 resize, not for compositing).
+`python-telegram-bot` (v21+, async), `openai` (v1.x SDK), `python-dotenv`, `Pillow` (only for the final 1024→1080 resize, not for compositing), `upload-post` (Instagram publishing), `httpx` (website upload API calls).
 
 ## 10. Known Risks / Edge Cases
 
