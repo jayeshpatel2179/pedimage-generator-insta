@@ -35,9 +35,15 @@ dates, quotes, statistics, outcomes) beyond what the headline and caption suppor
 - Use the Instagram caption for tone/context and the image for supporting visual/descriptive detail \
 (what's shown, the mood, visible context like team colors or setting) to help write natural, \
 informative prose - but never contradict the headline with something inferred only from the image.
+- Preserve the tone and opinion carried by the headline and caption just as strictly as the facts. \
+If they're critical, sarcastic, mocking, angry, or negative about the subject, the summary must read \
+the same way - clean up the grammar and flow, but do not launder out the attitude, and do not soften \
+criticism into neutrality or flip it into praise. If they're positive, hyped, or celebratory, match \
+that instead. Never default to a "safe" neutral news tone when the source material wasn't neutral.
 - Target length is {WEBSITE_SUMMARY_WORD_MIN}-{WEBSITE_SUMMARY_WORD_MAX} words. Stay in that range.
-- Neutral, clear, third-person news-recap tone - no first-person "we/I", no hot-take voice, no emoji, \
-no hashtags, no quotation marks around the whole thing.
+- Third-person, no emoji, no hashtags, no quotation marks around the whole thing. Structurally still \
+reads like a recap, not a social caption - but the attitude in the wording should match the source, \
+not a generic neutral register.
 - Plain prose, 2-4 sentences.
 
 Respond with STRICT JSON only, no markdown fences, no commentary, exactly this shape:
@@ -82,7 +88,9 @@ async def generate_website_summary(
     if is_regeneration:
         instruction = (
             "Write the summary again - genuinely different wording/structure from your previous "
-            f"attempt(s) below, while preserving the same facts, staying "
+            f"attempt(s) below, while preserving the same facts AND the same tone/opinion (if the "
+            f"source is critical, sarcastic, or negative, stay critical/sarcastic/negative - don't "
+            f"drift positive or neutral on a reroll), staying "
             f"{WEBSITE_SUMMARY_WORD_MIN}-{WEBSITE_SUMMARY_WORD_MAX} words.\n\n"
             "Your previous attempt(s) (do not repeat this exact wording):\n"
             + "\n".join(f"- {c}" for c in history)

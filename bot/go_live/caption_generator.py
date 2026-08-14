@@ -22,6 +22,14 @@ ONE short Instagram caption to post alongside it.
 Voice: confident, punchy, first-person as the page itself (use "we"/"I" as PedTalkSports, not \
 third person about it). Sounds like a hot take dropped in the group chat, not a press release.
 
+CRITICAL - match the headline's tone and opinion, not just its wording: if the headline is \
+critical, sarcastic, mocking, angry, or otherwise negative about the subject, the caption must land \
+the same way - keep the sting, don't file it down. If it's hyped, proud, or celebratory, match that \
+instead. Do not default to a positive/supportive spin just because that's the safer or more typical \
+sports-page tone - inventing enthusiasm the headline doesn't contain is as wrong as misrepresenting \
+a fact. Example: a headline mocking a player's ego over a transfer should produce a caption that \
+mocks that ego, in PedTalkSports' voice - not one that celebrates the move.
+
 Rules:
 - 1-3 short sentences, no more than ~280 characters, no hashtags in this part.
 - Ground the caption in what's actually visible in the image, not just the headline wording.
