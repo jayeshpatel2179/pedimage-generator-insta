@@ -1,22 +1,23 @@
 import asyncio
+import html
 import logging
+from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from bot.config import GO_LIVE_ALLOWED_USER_IDS, WEBSITE_SUMMARY_HISTORY_LIMIT
 from bot.go_live.caption_generator import generate_caption
+from bot.go_live.ig_caption import validation_error
 from bot.go_live.uploadpost_client import upload_photo_to_instagram
-from bot.publish import state
+from bot.publish import state, texts
 from bot.utils.image_utils import cleanup
-from bot.website.summary_generator import SummaryGenerationError, generate_website_summary
+from bot.website.summary_generator import generate_website_summary
 from bot.website.website_client import upload_photo_to_website
 
 logger = logging.getLogger(__name__)
-
-_EXPIRED_TEXT = "This draft expired (30 min passed). Regenerate the image to post it."
-_CAPTION_FAILURE_TEXT = "Couldn't generate a caption (API error). Tap Retry."
-_SUMMARY_FAILURE_TEXT = "Couldn't generate a website summary (API error). Tap Retry."
 
 
 def _is_allowed(user_id: int) -> bool:
@@ -24,228 +25,295 @@ def _is_allowed(user_id: int) -> bool:
     return not GO_LIVE_ALLOWED_USER_IDS or user_id in GO_LIVE_ALLOWED_USER_IDS
 
 
-def _caption_keyboard(draft_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
+def _cancel_keyboard(draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(texts.BTN_CANCEL, callback_data=f"pub_abort:{draft_id}")]])
+
+
+def _nothing_posted(draft: state.PublishDraft) -> bool:
+    return not (draft.instagram_posted or draft.website_posted)
+
+
+def _review_keyboard(draft: state.PublishDraft) -> Optional[InlineKeyboardMarkup]:
+    if draft.status == "posting":
+        return InlineKeyboardMarkup([[InlineKeyboardButton(texts.BTN_POSTING, callback_data=f"pub_golive:{draft.id}")]])
+    if draft.status == "awaiting_ig_caption":
+        return _cancel_keyboard(draft.id) if _nothing_posted(draft) else None
+
+    rows = []
+    if draft.summary_state == "ready":
+        rows.append(
             [
-                InlineKeyboardButton("✅ Save", callback_data=f"pub_save:{draft_id}"),
-                InlineKeyboardButton("\U0001f504 Regenerate", callback_data=f"pub_regen_caption:{draft_id}"),
+                InlineKeyboardButton(texts.BTN_GO_LIVE, callback_data=f"pub_golive:{draft.id}"),
+                InlineKeyboardButton(texts.BTN_REGEN_SUMMARY, callback_data=f"pub_regen_summary:{draft.id}"),
             ]
-        ]
+        )
+    elif draft.summary_state == "failed":
+        rows.append([InlineKeyboardButton(texts.BTN_RETRY_SUMMARY, callback_data=f"pub_regen_summary:{draft.id}")])
+    else:
+        rows.append([InlineKeyboardButton(texts.BTN_WORKING, callback_data=f"pub_regen_summary:{draft.id}")])
+
+    second_row = []
+    if not draft.instagram_posted:
+        second_row.append(InlineKeyboardButton(texts.BTN_EDIT_CAPTION, callback_data=f"pub_edit:{draft.id}"))
+    if _nothing_posted(draft):
+        second_row.append(InlineKeyboardButton(texts.BTN_CANCEL, callback_data=f"pub_abort:{draft.id}"))
+    if second_row:
+        rows.append(second_row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _review_text(draft: state.PublishDraft, note: Optional[str] = None) -> str:
+    """HTML review message. Every user/AI-supplied string is escaped - escaping only affects how
+    Telegram displays it, draft.ig_caption itself (what gets posted) is never touched."""
+    parts = []
+    if note:
+        parts.append(html.escape(note))
+    parts.append(texts.REVIEW_TITLE)
+
+    if draft.status == "awaiting_ig_caption" or draft.ig_caption is None:
+        parts.append(texts.REVIEW_CAPTION_WAITING)
+    else:
+        parts.append(
+            texts.REVIEW_CAPTION_HEADER.format(count=len(draft.ig_caption))
+            + f"\n<blockquote>{html.escape(draft.ig_caption)}</blockquote>"
+        )
+
+    if draft.summary_state == "ready" and draft.summary:
+        summary_part = f"<blockquote>{html.escape(draft.summary)}</blockquote>"
+    elif draft.summary_state == "failed":
+        summary_part = texts.REVIEW_SUMMARY_FAILED
+    else:
+        summary_part = texts.REVIEW_SUMMARY_PENDING
+    parts.append(f"{texts.REVIEW_SUMMARY_HEADER}\n{summary_part}")
+
+    if draft.status == "posting":
+        parts.append(texts.REVIEW_POSTING)
+    return "\n\n".join(parts)
+
+
+async def _safe_edit(bot, chat_id: int, message_id: Optional[int], text: str, reply_markup=None, parse_mode=None) -> None:
+    if message_id is None:
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode
+        )
+    except BadRequest as exc:
+        # "Message is not modified" / "message to edit not found" - nothing useful to do.
+        logger.info("Couldn't edit message %s in chat %s: %s", message_id, chat_id, exc)
+
+
+async def _refresh_review(bot, draft: state.PublishDraft, note: Optional[str] = None) -> None:
+    await _safe_edit(
+        bot, draft.chat_id, draft.review_message_id, _review_text(draft, note), _review_keyboard(draft), ParseMode.HTML
     )
 
 
-def _caption_busy_keyboard(draft_id: str, label: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"pub_regen_caption:{draft_id}")]])
+async def _close_draft_messages(bot, draft: state.PublishDraft, text: str, skip_message_id: Optional[int] = None) -> None:
+    """Replaces the draft's prompt/review messages with a final line so no stale buttons remain."""
+    for message_id in {draft.ask_message_id, draft.review_message_id}:
+        if message_id is not None and message_id != skip_message_id:
+            await _safe_edit(bot, draft.chat_id, message_id, text)
 
 
-def _caption_failed_keyboard(draft_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("\U0001f504 Retry", callback_data=f"pub_regen_caption:{draft_id}"),
-                InlineKeyboardButton("❌ Abort", callback_data=f"pub_abort:{draft_id}"),
-            ]
-        ]
-    )
+async def _on_draft_expired(application, draft: state.PublishDraft) -> None:
+    await _close_draft_messages(application.bot, draft, texts.EXPIRED)
 
 
-def _summary_keyboard(draft_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("\U0001f680 Go Live", callback_data=f"pub_golive:{draft_id}"),
-                InlineKeyboardButton("\U0001f504 Regenerate Summary", callback_data=f"pub_regen_summary:{draft_id}"),
-            ],
-            [InlineKeyboardButton("❌ Abort", callback_data=f"pub_abort:{draft_id}")],
-        ]
-    )
-
-
-def _summary_busy_keyboard(draft_id: str, label: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"pub_regen_summary:{draft_id}")]])
-
-
-def _summary_failed_keyboard(draft_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("\U0001f504 Retry", callback_data=f"pub_regen_summary:{draft_id}"),
-                InlineKeyboardButton("❌ Abort", callback_data=f"pub_abort:{draft_id}"),
-            ]
-        ]
-    )
-
-
-def _caption_preview_text(caption: str, note: str | None = None) -> str:
-    base = (
-        f"Instagram caption preview:\n\n{caption}\n\n"
-        "Reply to this message with new text to edit it, or use the buttons below."
-    )
-    return f"{note}\n\n{base}" if note else base
-
-
-def _summary_preview_text(summary: str, note: str | None = None) -> str:
-    base = f"Website summary preview:\n\n{summary}"
-    return f"{note}\n\n{base}" if note else base
+def _schedule_expiry(application, draft: state.PublishDraft) -> None:
+    state.schedule_expiry_cleanup(application, draft.id, lambda d: _on_draft_expired(application, d))
 
 
 async def begin_publish_flow(context: ContextTypes.DEFAULT_TYPE, draft: state.PublishDraft) -> None:
-    """Kicks off the merged publish pipeline right after the poster image is generated.
+    """Runs right after the poster image is sent: asks for the (mandatory, manual) Instagram
+    caption and, meanwhile, generates the website summary in the background."""
+    _schedule_expiry(context.application, draft)
 
-    No manual "Go Live" tap needed here - caption + hashtag generation runs immediately so the
-    image and its Instagram copy are reviewed together as one step (see conversation.py).
-    """
-    status_msg = await context.bot.send_message(
+    ask_msg = await context.bot.send_message(
         chat_id=draft.chat_id,
-        text="\U0001f916 Generating caption + hashtags...",
+        text=texts.ASK_CAPTION,
         reply_to_message_id=draft.image_message_id,
+        reply_markup=_cancel_keyboard(draft.id),
     )
-    state.set_caption_message(draft, status_msg.message_id)
-    await _produce_caption(context, draft, status_msg.message_id)
+    async with draft.lock:
+        draft.ask_message_id = ask_msg.message_id
+        draft.status = "awaiting_ig_caption"
+        state.save()
+
+    context.application.create_task(_produce_summary(context.bot, draft, is_regeneration=False))
 
 
-async def _produce_caption(context, draft: state.PublishDraft, message_id: int) -> None:
+async def _produce_summary(bot, draft: state.PublishDraft, *, is_regeneration: bool) -> None:
+    # Same two calls as before the manual-caption change: the AI caption is still generated
+    # because the website summary prompt is grounded on it - it's an input only and is never
+    # shown or sent to Instagram (that's draft.ig_caption, typed by the editor).
     try:
-        caption = await generate_caption(draft.headline, draft.image_path)
-    except Exception:
-        logger.exception("Caption generation failed for draft %s", draft.id)
-        had_previous = draft.caption is not None
-        async with draft.lock:
-            draft.status = "awaiting_caption_review" if had_previous else "failed_caption"
-        if had_previous:
-            await context.bot.edit_message_text(
-                chat_id=draft.chat_id,
-                message_id=message_id,
-                text=_caption_preview_text(draft.caption, note="⚠️ Regeneration failed - showing the previous caption."),
-                reply_markup=_caption_keyboard(draft.id),
-            )
-        else:
-            await context.bot.edit_message_text(
-                chat_id=draft.chat_id, message_id=message_id, text=_CAPTION_FAILURE_TEXT, reply_markup=_caption_failed_keyboard(draft.id)
-            )
-        return
-
-    async with draft.lock:
-        draft.caption = caption
-        draft.status = "awaiting_caption_review"
-
-    await context.bot.edit_message_text(
-        chat_id=draft.chat_id, message_id=message_id, text=_caption_preview_text(caption), reply_markup=_caption_keyboard(draft.id)
-    )
-
-
-async def on_regen_caption_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user = update.effective_user
-    draft_id = query.data.split(":", 1)[1]
-
-    if not _is_allowed(user.id):
-        await query.answer("You're not authorized to publish.", show_alert=True)
-        return
-
-    draft = state.get_draft(draft_id)
-    if draft is None:
-        await query.answer(_EXPIRED_TEXT, show_alert=True)
-        return
-
-    async with draft.lock:
-        if state.is_expired(draft):
-            await query.answer()
-            state.pop_draft(draft.id)
-            cleanup(draft.image_path)
-            await query.edit_message_text(_EXPIRED_TEXT)
-            return
-
-        if draft.status not in ("awaiting_caption_review", "failed_caption"):
-            await query.answer("Hang on, that's already in progress.", show_alert=False)
-            return
-
-        had_previous = draft.status == "awaiting_caption_review"
-        draft.status = "regenerating_caption"
-        await query.answer()
-        await query.edit_message_text(
-            "\U0001f504 Regenerating..." if had_previous else "\U0001f504 Retrying...",
-            reply_markup=_caption_busy_keyboard(draft.id, "\U0001f504 Working..."),
-        )
-
-    context.application.create_task(_produce_caption(context, draft, draft.caption_message_id))
-
-
-async def on_save_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user = update.effective_user
-    draft_id = query.data.split(":", 1)[1]
-
-    if not _is_allowed(user.id):
-        await query.answer("You're not authorized to publish.", show_alert=True)
-        return
-
-    draft = state.get_draft(draft_id)
-    if draft is None:
-        await query.answer(_EXPIRED_TEXT, show_alert=True)
-        return
-
-    async with draft.lock:
-        if state.is_expired(draft):
-            await query.answer()
-            state.pop_draft(draft.id)
-            cleanup(draft.image_path)
-            await query.edit_message_text(_EXPIRED_TEXT)
-            return
-
-        if draft.status != "awaiting_caption_review":
-            await query.answer("Hang on, that's already in progress.", show_alert=False)
-            return
-
-        draft.status = "generating_summary"
-        await query.answer()
-        await query.edit_message_text(f"✅ Caption saved:\n\n{draft.caption}")
-
-    status_msg = await context.bot.send_message(
-        chat_id=draft.chat_id,
-        text="\U0001f916 Generating website summary...",
-        reply_to_message_id=draft.caption_message_id,
-    )
-    draft.summary_message_id = status_msg.message_id
-    await _produce_summary(context, draft, is_regeneration=False)
-
-
-async def _produce_summary(context, draft: state.PublishDraft, *, is_regeneration: bool) -> None:
-    try:
+        if draft.ai_caption is None:
+            ai_caption = await generate_caption(draft.headline, draft.image_path)
+            async with draft.lock:
+                draft.ai_caption = ai_caption
         summary = await generate_website_summary(
             draft.image_path,
             draft.headline,
-            draft.caption,
+            draft.ai_caption,
             is_regeneration=is_regeneration,
             history=draft.summary_history[-WEBSITE_SUMMARY_HISTORY_LIMIT:],
         )
-    except SummaryGenerationError:
+    except Exception:
         logger.exception("Website summary generation failed for draft %s", draft.id)
-        had_previous = draft.summary is not None
         async with draft.lock:
-            draft.status = "awaiting_summary_review" if had_previous else "failed_summary"
-        if had_previous:
-            await context.bot.edit_message_text(
-                chat_id=draft.chat_id,
-                message_id=draft.summary_message_id,
-                text=_summary_preview_text(draft.summary, note="⚠️ Regeneration failed - showing the previous summary."),
-                reply_markup=_summary_keyboard(draft.id),
-            )
-        else:
-            await context.bot.edit_message_text(
-                chat_id=draft.chat_id, message_id=draft.summary_message_id, text=_SUMMARY_FAILURE_TEXT, reply_markup=_summary_failed_keyboard(draft.id)
-            )
+            if not state.is_live(draft):
+                return
+            had_previous = draft.summary is not None
+            draft.summary_state = "ready" if had_previous else "failed"
+            state.save()
+        await _refresh_review(bot, draft, texts.REVIEW_NOTE_SUMMARY_REGEN_FAILED if had_previous else None)
         return
 
     async with draft.lock:
+        if not state.is_live(draft):
+            return
         draft.summary = summary
         draft.summary_history.append(summary)
-        draft.status = "awaiting_summary_review"
+        draft.summary_state = "ready"
+        state.save()
+    await _refresh_review(bot, draft)
 
-    await context.bot.edit_message_text(
-        chat_id=draft.chat_id, message_id=draft.summary_message_id, text=_summary_preview_text(summary), reply_markup=_summary_keyboard(draft.id)
+
+def _reply_target_id(message) -> Optional[int]:
+    return message.reply_to_message.message_id if message.reply_to_message else None
+
+
+async def on_caption_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Claims the next text message from a user who has a draft awaiting its Instagram caption.
+
+    Registered ahead of the headline ConversationHandler (group -1) so the caption is never
+    mistaken for a new headline. Commands aren't routed here, so /cancel, /start and /help keep
+    working. Falls through (no ApplicationHandlerStop) when there's no draft waiting.
+    """
+    message = update.effective_message
+    user = update.effective_user
+    if user is None or message.text is None:
+        return
+    draft = state.find_awaiting_caption_draft(message.chat_id, user.id, _reply_target_id(message))
+    if draft is None:
+        return
+
+    # Only leading/trailing whitespace is trimmed - everything else is kept byte-for-byte.
+    caption = message.text.strip()
+
+    async with draft.lock:
+        if not state.is_live(draft) or draft.status != "awaiting_ig_caption":
+            return
+        if state.is_expired(draft):
+            state.pop_draft(draft.id)
+            cleanup(draft.image_path)
+            await message.reply_text(texts.EXPIRED)
+            await _close_draft_messages(context.bot, draft, texts.EXPIRED)
+            raise ApplicationHandlerStop
+
+        error = validation_error(caption)
+        if error:
+            await message.reply_text(error)
+            raise ApplicationHandlerStop
+
+        is_edit = draft.ig_caption is not None
+        draft.ig_caption = caption
+        draft.status = "review"
+        state.save()
+
+    await _safe_edit(context.bot, draft.chat_id, draft.ask_message_id, texts.ASK_CAPTION_ANSWERED)
+
+    if draft.review_message_id is not None:
+        await _refresh_review(context.bot, draft, texts.REVIEW_NOTE_CAPTION_UPDATED if is_edit else None)
+    else:
+        review_msg = await context.bot.send_message(
+            chat_id=draft.chat_id,
+            text=_review_text(draft),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_review_keyboard(draft),
+            reply_to_message_id=draft.image_message_id,
+        )
+        async with draft.lock:
+            draft.review_message_id = review_msg.message_id
+            state.save()
+    raise ApplicationHandlerStop
+
+
+async def on_non_text_while_awaiting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A photo/voice/sticker/file from a user whose draft is awaiting its caption. A new image
+    never starts a second draft while one is waiting."""
+    message = update.effective_message
+    user = update.effective_user
+    if user is None:
+        return
+    draft = state.find_awaiting_caption_draft(message.chat_id, user.id, _reply_target_id(message))
+    if draft is None:
+        return
+
+    is_image = bool(message.photo) or bool(
+        message.document and (message.document.mime_type or "").startswith("image/")
     )
+    if is_image:
+        await message.reply_text(texts.STILL_WAITING_FOR_CAPTION, reply_markup=_cancel_keyboard(draft.id))
+    else:
+        await message.reply_text(texts.CAPTION_NOT_TEXT)
+    raise ApplicationHandlerStop
+
+
+async def on_edited_while_awaiting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Edits are ignored while a caption is awaited - otherwise an edited earlier message would
+    fall through to the headline handler and start a new graphic."""
+    message = update.effective_message
+    user = update.effective_user
+    if user is not None and state.awaiting_caption_drafts(message.chat_id, user.id):
+        raise ApplicationHandlerStop
+
+
+async def on_edit_caption_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    draft_id = query.data.split(":", 1)[1]
+
+    if not _is_allowed(user.id):
+        await query.answer(texts.NOT_AUTHORIZED, show_alert=True)
+        return
+
+    draft = state.get_draft(draft_id)
+    if draft is None:
+        await query.answer(texts.EXPIRED, show_alert=True)
+        return
+
+    async with draft.lock:
+        if state.is_expired(draft):
+            await query.answer()
+            state.pop_draft(draft.id)
+            cleanup(draft.image_path)
+            await query.edit_message_text(texts.EXPIRED)
+            return
+        if draft.instagram_posted:
+            await query.answer("Already posted to Instagram - the caption can't change now.", show_alert=True)
+            return
+        if draft.status != "review":
+            await query.answer("Hang on, that's already in progress.", show_alert=False)
+            return
+
+        # Whoever tapped Edit types the replacement.
+        draft.user_id = user.id
+        draft.status = "awaiting_ig_caption"
+        state.save()
+        await query.answer()
+
+    await _refresh_review(context.bot, draft)
+    ask_msg = await context.bot.send_message(
+        chat_id=draft.chat_id,
+        text=texts.ASK_NEW_CAPTION,
+        reply_to_message_id=draft.review_message_id,
+        reply_markup=_cancel_keyboard(draft.id),
+    )
+    async with draft.lock:
+        draft.ask_message_id = ask_msg.message_id
+        state.save()
 
 
 async def on_regen_summary_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -254,12 +322,12 @@ async def on_regen_summary_tap(update: Update, context: ContextTypes.DEFAULT_TYP
     draft_id = query.data.split(":", 1)[1]
 
     if not _is_allowed(user.id):
-        await query.answer("You're not authorized to publish.", show_alert=True)
+        await query.answer(texts.NOT_AUTHORIZED, show_alert=True)
         return
 
     draft = state.get_draft(draft_id)
     if draft is None:
-        await query.answer(_EXPIRED_TEXT, show_alert=True)
+        await query.answer(texts.EXPIRED, show_alert=True)
         return
 
     async with draft.lock:
@@ -267,22 +335,20 @@ async def on_regen_summary_tap(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer()
             state.pop_draft(draft.id)
             cleanup(draft.image_path)
-            await query.edit_message_text(_EXPIRED_TEXT)
+            await query.edit_message_text(texts.EXPIRED)
             return
 
-        if draft.status not in ("awaiting_summary_review", "failed_summary"):
+        if draft.status != "review" or draft.summary_state not in ("ready", "failed"):
             await query.answer("Hang on, that's already in progress.", show_alert=False)
             return
 
-        had_previous = draft.status == "awaiting_summary_review"
-        draft.status = "regenerating_summary"
+        had_previous = draft.summary_state == "ready"
+        draft.summary_state = "regenerating" if had_previous else "pending"
+        state.save()
         await query.answer()
-        await query.edit_message_text(
-            "\U0001f504 Rewriting..." if had_previous else "\U0001f504 Retrying...",
-            reply_markup=_summary_busy_keyboard(draft.id, "\U0001f504 Working..."),
-        )
 
-    context.application.create_task(_produce_summary(context, draft, is_regeneration=had_previous))
+    await _refresh_review(context.bot, draft)
+    context.application.create_task(_produce_summary(context.bot, draft, is_regeneration=had_previous))
 
 
 async def on_golive_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,12 +357,12 @@ async def on_golive_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     draft_id = query.data.split(":", 1)[1]
 
     if not _is_allowed(user.id):
-        await query.answer("You're not authorized to publish.", show_alert=True)
+        await query.answer(texts.NOT_AUTHORIZED, show_alert=True)
         return
 
     draft = state.get_draft(draft_id)
     if draft is None:
-        await query.answer(_EXPIRED_TEXT, show_alert=True)
+        await query.answer(texts.EXPIRED, show_alert=True)
         return
 
     async with draft.lock:
@@ -310,28 +376,30 @@ async def on_golive_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await query.answer()
             state.pop_draft(draft.id)
             cleanup(draft.image_path)
-            await query.edit_message_text(_EXPIRED_TEXT)
+            await query.edit_message_text(texts.EXPIRED)
             return
-        if draft.status != "awaiting_summary_review":
+        if draft.status != "review" or draft.summary_state != "ready":
             await query.answer("Hang on, still preparing the summary.", show_alert=False)
+            return
+        if not draft.ig_caption:
+            await query.answer("Send the Instagram caption first.", show_alert=True)
             return
 
         draft.status = "posting"
+        state.save()
         await query.answer()
-        await query.edit_message_text(
-            f"Posting to Instagram + website...\n\n{draft.summary}",
-            reply_markup=_summary_busy_keyboard(draft.id, "⏳ Posting..."),
-        )
 
-    context.application.create_task(_do_publish(context, draft))
+    await _refresh_review(context.bot, draft)
+    context.application.create_task(_do_publish(context.bot, draft))
 
 
-async def _do_publish(context, draft: state.PublishDraft) -> None:
+async def _do_publish(bot, draft: state.PublishDraft) -> None:
     # Only (re)posts to platforms not already confirmed live, so retrying after a partial
-    # failure (one platform succeeded, the other errored) never double-posts.
+    # failure (one platform succeeded, the other errored) never double-posts. A retry reuses
+    # the same stored manual caption and AI summary.
     jobs: dict[str, asyncio.Task] = {}
     if not draft.instagram_posted:
-        jobs["instagram"] = asyncio.create_task(upload_photo_to_instagram(draft.image_path, draft.caption))
+        jobs["instagram"] = asyncio.create_task(upload_photo_to_instagram(draft.image_path, draft.ig_caption))
     if not draft.website_posted:
         jobs["website"] = asyncio.create_task(upload_photo_to_website(draft.image_path, draft.summary))
 
@@ -356,7 +424,8 @@ async def _do_publish(context, draft: state.PublishDraft) -> None:
             else:
                 draft.website_posted = True
 
-        draft.status = "awaiting_summary_review" if errors else "posted"
+        draft.status = "review" if errors else "posted"
+        state.save()
 
     if errors:
         note_lines = ["⚠️ Posting failed for: " + "; ".join(errors)]
@@ -364,18 +433,13 @@ async def _do_publish(context, draft: state.PublishDraft) -> None:
             note_lines.append("✅ Instagram already posted - Go Live again will only retry the website.")
         if draft.website_posted:
             note_lines.append("✅ Website already posted - Go Live again will only retry Instagram.")
-        await context.bot.edit_message_text(
-            chat_id=draft.chat_id,
-            message_id=draft.summary_message_id,
-            text=_summary_preview_text(draft.summary, note="\n".join(note_lines)),
-            reply_markup=_summary_keyboard(draft.id),
-        )
+        await _refresh_review(bot, draft, "\n".join(note_lines))
         return
 
-    lines = ["✅ Posted to Instagram and the website!"]
+    lines = [texts.POSTED]
     if draft.instagram_url:
         lines.append(f"Instagram: {draft.instagram_url}")
-    await context.bot.edit_message_text(chat_id=draft.chat_id, message_id=draft.summary_message_id, text="\n".join(lines))
+    await _safe_edit(bot, draft.chat_id, draft.review_message_id, "\n".join(lines))
 
     cleanup(draft.image_path)
     state.pop_draft(draft.id)
@@ -387,75 +451,58 @@ async def on_abort_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     draft_id = query.data.split(":", 1)[1]
 
     if not _is_allowed(user.id):
-        await query.answer("You're not authorized to publish.", show_alert=True)
+        await query.answer(texts.NOT_AUTHORIZED, show_alert=True)
         return
 
     draft = state.get_draft(draft_id)
     if draft is None:
-        await query.answer(_EXPIRED_TEXT, show_alert=True)
+        await query.answer(texts.EXPIRED, show_alert=True)
         return
 
     async with draft.lock:
         if draft.status == "posting":
-            await query.answer("Already posting - can't abort now.", show_alert=False)
+            await query.answer("Already posting - can't cancel now.", show_alert=False)
             return
         if draft.status == "posted":
             await query.answer("Already posted.", show_alert=False)
             return
-        if draft.instagram_posted or draft.website_posted:
+        if not _nothing_posted(draft):
             posted_where = " and ".join(
                 p for p, ok in (("Instagram", draft.instagram_posted), ("the website", draft.website_posted)) if ok
             )
-            await query.answer(f"Already posted to {posted_where} - can't abort, only retry the rest.", show_alert=True)
+            await query.answer(f"Already posted to {posted_where} - can't cancel, only retry the rest.", show_alert=True)
             return
-        if draft.status not in ("failed_caption", "awaiting_summary_review", "failed_summary"):
+        if draft.status not in ("awaiting_ig_caption", "review"):
             await query.answer("Hang on, still working on that.", show_alert=False)
             return
 
         state.pop_draft(draft.id)
         cleanup(draft.image_path)
         await query.answer()
-        await query.edit_message_text("❌ Aborted - nothing was posted.")
+
+    await query.edit_message_text(texts.CANCELLED)
+    await _close_draft_messages(context.bot, draft, texts.CANCELLED, skip_message_id=query.message.message_id)
 
 
-async def on_caption_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Lets a user edit the pending caption by replying to the caption preview message.
-
-    Registered ahead of the headline ConversationHandler (lower group number) so a caption edit
-    isn't mistaken for a new headline; only stops propagation (ApplicationHandlerStop) when the
-    reply actually targets a known draft.
-    """
-    message = update.effective_message
-    reply_to = message.reply_to_message
-    if reply_to is None:
-        return
-
-    draft = state.get_draft_by_caption_message(message.chat_id, reply_to.message_id)
-    if draft is None:
-        return
-
-    new_caption = (message.text or "").strip()
-    if not new_caption:
-        await message.reply_text("That looked empty - send the replacement caption text.")
-        raise ApplicationHandlerStop
-
-    async with draft.lock:
-        if state.is_expired(draft):
+async def cancel_awaiting_drafts(bot, chat_id: int, user_id: int) -> int:
+    """/cancel: discards this user's drafts that are waiting for their caption. Returns how many."""
+    cancelled = 0
+    for draft in state.awaiting_caption_drafts(chat_id, user_id):
+        async with draft.lock:
+            if not state.is_live(draft) or draft.status != "awaiting_ig_caption" or not _nothing_posted(draft):
+                continue
             state.pop_draft(draft.id)
             cleanup(draft.image_path)
-            await message.reply_text(_EXPIRED_TEXT)
-            raise ApplicationHandlerStop
+        await _close_draft_messages(bot, draft, texts.CANCELLED)
+        cancelled += 1
+    return cancelled
 
-        if draft.status != "awaiting_caption_review":
-            await message.reply_text("Can't edit the caption right now - it's already saved or in progress.")
-            raise ApplicationHandlerStop
 
-        draft.caption = new_caption
-
-    await context.bot.edit_message_text(
-        chat_id=draft.chat_id,
-        message_id=draft.caption_message_id,
-        text=_caption_preview_text(new_caption, note="✏️ Caption updated."),
-        reply_markup=_caption_keyboard(draft.id),
-    )
-    raise ApplicationHandlerStop
+async def restore_after_restart(application) -> None:
+    """post_init hook: reloads persisted drafts, re-arms their expiry timers, and refreshes the
+    review of any draft whose in-flight work was interrupted by the restart."""
+    for draft, note in state.load():
+        note_text = texts.REVIEW_NOTE_RESTARTED_WHILE_POSTING if note == "restarted_while_posting" else None
+        await _refresh_review(application.bot, draft, note_text)
+    for draft in state.all_drafts():
+        _schedule_expiry(application, draft)

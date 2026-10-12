@@ -59,12 +59,13 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     photo_file = await update.effective_message.photo[-1].get_file()
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
     await update.effective_message.reply_text("Generating your image, this can take a moment...")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
 
     context.application.create_task(
-        _generate_and_send(context, chat_id, photo_file, headline, emphasis, layout_side)
+        _generate_and_send(context, chat_id, user_id, photo_file, headline, emphasis, layout_side)
     )
 
     context.user_data.clear()
@@ -74,7 +75,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     raise ApplicationHandlerStop(ConversationHandler.END)
 
 
-async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, layout_side) -> None:
+async def _generate_and_send(context, chat_id, user_id, photo_file, headline, emphasis, layout_side) -> None:
     input_path = None
     output_path = None
     draft = None
@@ -87,14 +88,15 @@ async def _generate_and_send(context, chat_id, photo_file, headline, emphasis, l
         # output_path is kept (not cleaned up here) so the publish flow can upload the
         # pre-Telegram-compression file to both Instagram and the website - see
         # publish/state.py, which owns its cleanup from here on (on post success, abort,
-        # or the 30-minute expiry sweep).
-        draft = publish_state.create_draft(image_path=output_path, headline=headline, chat_id=chat_id)
+        # or the 30-minute expiry sweep, armed in begin_publish_flow).
+        draft = publish_state.create_draft(
+            image_path=output_path, headline=headline, chat_id=chat_id, user_id=user_id
+        )
 
         with open(output_path, "rb") as final_image:
             sent_message = await context.bot.send_photo(chat_id=chat_id, photo=final_image)
 
         publish_state.attach_image_message(draft, sent_message.message_id)
-        publish_state.schedule_expiry_cleanup(context.application, draft.id)
         await begin_publish_flow(context, draft)
     except Exception as exc:
         logger.exception("Image generation failed for chat_id=%s", chat_id)

@@ -44,14 +44,16 @@ These are the fixed visual rules every generated image must follow. They get bak
 
 Added after v1: the generated image is never posted anywhere by itself — it feeds a two-stage review, and a single **Go Live** tap at the end publishes to Instagram and the website simultaneously. Nothing goes live until both stages are approved. See `bot/publish/`, `bot/handlers/publish.py`, and the README's "Publishing" section for the full user-facing walkthrough. Summary:
 
-1. **Caption stage** (automatic, no tap needed to start): right after the image is generated, a `gpt-4o-mini` vision call (`bot/go_live/caption_generator.py`) writes a first-person IG caption + hashtags grounded on the finished graphic. Reviewed with **Save** / **Regenerate**, or edit by replying to the preview message with new text.
-2. **Summary stage** (auto-triggered by Save, reuses the same image — nothing is re-sent): another vision call (`bot/website/summary_generator.py`) writes a 50-60 word website summary grounded on the headline + the approved Instagram caption. Reviewed with **Go Live** / **Regenerate Summary** / **Abort**.
+1. **Caption stage** (manual, mandatory): right after the image is generated, the bot asks the editor to type the Instagram caption. Their next text message is claimed as the caption (handler group -1, ahead of the headline conversation) and posted to Instagram **exactly as typed** - validated against Instagram's limits (2,200 chars / 30 hashtags / 20 @tags, per Meta's IG media docs), never truncated or rewritten. `IG_CAPTION_SUFFIX` (empty) is the only thing ever appended.
+2. **Summary + review** (summary generated in the background while the caption is typed): the same two vision calls as before - `bot/go_live/caption_generator.py` produces an AI caption used *only* as an input to `bot/website/summary_generator.py` (never shown, never posted), which writes the 50-60 word website summary. One review message shows the manual caption and the summary, with **Go Live** / **Regenerate Summary** / **Edit Instagram caption** / **Cancel**.
 3. **Go Live**: publishes to Instagram (via upload-post.com, `bot/go_live/uploadpost_client.py`) and the website (via its own upload API, `bot/website/website_client.py`) concurrently. A `PublishDraft` (`bot/publish/state.py`) tracks each platform's posted status independently, so a partial failure (one platform succeeds, the other errors) is retried by tapping Go Live again without double-posting to the side that already succeeded.
 
 Design decisions behind this shape:
-- No live posting happens until both reviews are done, so a bad caption or a bad summary never has to be "fixed after the fact" on a platform.
-- The website summary is grounded on the headline + Instagram caption rather than a hand-typed user draft (an earlier version required resending the photo with a written description) — removed to cut a manual step now that the caption already exists and carries the same facts.
-- Drafts are in-memory only (same posture as image generation state) — lost on redeploy by design, acceptable since regenerating the image is cheap enough to redo the whole flow.
+- No live posting happens until the review is approved, so a bad caption or a bad summary never has to be "fixed after the fact" on a platform.
+- The Instagram caption is typed by an editor, not AI-written — the posting layer (`upload_photo_to_instagram`) refuses a missing/blank caption, so no code path can post AI text to Instagram.
+- The website summary stays AI-generated, grounded on the headline + the internal AI caption + the image, independent of what the editor types.
+- Drafts are persisted to `storage/publish_drafts.json` (next to the generated images in `storage/temp/`) so a restart doesn't lose a draft awaiting its caption or in review. Like the images, it doesn't survive a redeploy onto a fresh container filesystem.
+- `DRY_RUN=1` makes the posting layer log the exact outgoing payloads instead of posting.
 
 ## 4. Telegram Group Setup Requirements (action items for you, not code)
 

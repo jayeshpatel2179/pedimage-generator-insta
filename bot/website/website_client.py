@@ -1,9 +1,10 @@
+import json
 import logging
 from pathlib import Path
 
 import httpx
 
-from bot.config import WEBSITE_UPLOAD_API_KEY, WEBSITE_UPLOAD_URL
+from bot.config import DRY_RUN, WEBSITE_UPLOAD_API_KEY, WEBSITE_UPLOAD_URL
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,11 @@ async def upload_photo_to_website(image_path: Path, summary: str) -> str:
     POST WEBSITE_UPLOAD_URL, multipart/form-data with an `image` file field and a `summary` text
     field, authenticated via the `x-api-key` header. Returns the published URL on success.
     """
+    if DRY_RUN:
+        payload = {"url": WEBSITE_UPLOAD_URL, "data": {"summary": summary} if summary else {}, "image": image_path.name}
+        logger.info("DRY_RUN website payload: %s", json.dumps(payload, ensure_ascii=False))
+        return "https://dry-run.invalid/website"
+
     if not WEBSITE_UPLOAD_API_KEY:
         raise WebsiteUploadError("Website posting isn't configured yet - missing WEBSITE_UPLOAD_API_KEY.")
 

@@ -22,11 +22,13 @@ from bot.handlers.conversation import (
 )
 from bot.handlers.publish import (
     on_abort_tap,
-    on_caption_reply,
+    on_caption_text,
+    on_edit_caption_tap,
+    on_edited_while_awaiting,
     on_golive_tap,
-    on_regen_caption_tap,
+    on_non_text_while_awaiting,
     on_regen_summary_tap,
-    on_save_tap,
+    restore_after_restart,
 )
 from bot.handlers.start import help_command, start
 
@@ -58,6 +60,7 @@ def build_application() -> Application:
         .read_timeout(60)
         .write_timeout(60)
         .pool_timeout(30)
+        .post_init(restore_after_restart)
         .build()
     )
 
@@ -81,14 +84,25 @@ def build_application() -> Application:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    # Runs before the conversation's headline handler so replies editing the caption
-    # preview aren't mistaken for a new headline (see handlers/publish.py).
+    # Group -1 runs before the conversation's headline handler: while a draft is awaiting its
+    # Instagram caption, that user's next text message is the caption (never a new headline),
+    # non-text messages get a nudge, and edits are ignored. Each falls through when no draft
+    # is waiting. Commands aren't matched here, so /cancel, /start and /help keep priority.
     application.add_handler(
-        MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_caption_reply), group=-1
+        MessageHandler(filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND, on_caption_text), group=-1
     )
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & ~filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
+            on_non_text_while_awaiting,
+        ),
+        group=-1,
+    )
+    application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, on_edited_while_awaiting), group=-1)
     application.add_handler(conversation)
-    application.add_handler(CallbackQueryHandler(on_save_tap, pattern=r"^pub_save:"))
-    application.add_handler(CallbackQueryHandler(on_regen_caption_tap, pattern=r"^pub_regen_caption:"))
+    # Outside the headline conversation, /cancel still discards a draft awaiting its caption.
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(CallbackQueryHandler(on_edit_caption_tap, pattern=r"^pub_edit:"))
     application.add_handler(CallbackQueryHandler(on_golive_tap, pattern=r"^pub_golive:"))
     application.add_handler(CallbackQueryHandler(on_regen_summary_tap, pattern=r"^pub_regen_summary:"))
     application.add_handler(CallbackQueryHandler(on_abort_tap, pattern=r"^pub_abort:"))

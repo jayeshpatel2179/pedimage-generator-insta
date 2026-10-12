@@ -23,7 +23,7 @@ style rules, and the decisions behind them).
    - `OPENAI_IMAGE_MODEL` - defaults to `gpt-image-2`, only change if needed
    - `UPLOAD_POST_API_KEY` / `UPLOAD_POST_PROFILE` - from your
      [upload-post.com](https://www.upload-post.com/) dashboard; required for the
-     Instagram half of **Go Live** (image generation and caption review still
+     Instagram half of **Go Live** (image generation and the review still
      work without these set - only the final publish step needs them)
    - `WEBSITE_UPLOAD_API_KEY` - required for the website half of **Go Live**
      (everything else, including the Instagram half, still works without it)
@@ -31,6 +31,8 @@ style rules, and the decisions behind them).
      `https://www.pedtalkssports.com/api/instagram/upload`
    - `GO_LIVE_ALLOWED_USER_IDS` - optional, comma-separated Telegram user IDs.
      Leave empty to let anyone in the group publish.
+   - `DRY_RUN` - optional; `1` logs the outgoing Instagram/website payloads
+     instead of posting. Leave unset (off) in production.
 
 3. **Required Telegram group setup** (do this before using the bot in the group):
    - Message @BotFather -> `/setprivacy` -> select your bot -> `Disable`.
@@ -63,29 +65,28 @@ In the group (or a DM with the bot):
 `/cancel` aborts a request in progress. A request that gets no reply for 5
 minutes times out automatically.
 
-### Publishing (one merged review, then Go Live posts to both platforms)
+### Publishing (manual Instagram caption, one review, then Go Live posts to both platforms)
 
-Nothing goes live until you've reviewed and approved *both* the Instagram
-caption and the website summary - the bot never partially posts. The flow has
-two review steps on the same generated image:
+Nothing goes live until you've reviewed and approved the Instagram caption and
+the website summary together - the bot never posts without that approval.
 
-**1. Instagram caption + hashtags**
+**1. Type the Instagram caption (required)**
 
-As soon as the image is generated, the bot writes a first-person IG caption +
-3-4 hashtags (a `gpt-4o-mini` vision call grounded on the finished graphic,
-not just the on-image headline text) and posts it for review:
+As soon as the image is generated, the bot asks you to type the Instagram
+caption. Your next text message is the caption (it's never mistaken for a new
+headline), and it's posted to Instagram **exactly as typed** - no AI rewriting,
+no added hashtags. Only leading/trailing whitespace is trimmed. Captions over
+Instagram's limits (2,200 characters, 30 hashtags, 20 @mentions) are rejected
+with a message so you can shorten and resend - never truncated. **❌ Cancel**
+discards the draft (so does `/cancel`).
 
-- **✅ Save** - locks the caption in and moves straight on to the website
-  summary (step 2) - nothing is posted to Instagram yet.
-- **🔄 Regenerate** - another AI attempt at the caption, same image.
-- Reply to the caption preview message with new text to edit it directly
-  instead of regenerating.
+Meanwhile the bot writes a **50-60 word** website summary in the background
+(AI, grounded on the headline and the image - unchanged from before).
 
-**2. Website summary**
+**2. Review**
 
-Right after you tap Save, the bot reuses the *same* image (no need to resend
-anything) and writes a **50-60 word** website summary grounded on the
-headline + the Instagram caption you just approved, then posts it for review:
+One review message shows your caption (with its character count) and the AI
+website summary:
 
 - **🚀 Go Live** - publishes to **both** the PedTalkSports Instagram account
   (via [upload-post.com](https://www.upload-post.com/)) and the PedTalks
@@ -93,13 +94,21 @@ headline + the Instagram caption you just approved, then posts it for review:
   publishes anything.
 - **🔄 Regenerate Summary** - a different 50-60 word rewrite of the same
   facts, same image.
-- **❌ Abort** - drops the whole draft, nothing is posted anywhere.
+- **✏️ Edit Instagram caption** - asks for a new caption; the review updates.
+- **❌ Cancel** - drops the whole draft, nothing is posted anywhere.
 
 If Go Live only partially succeeds (one platform posts, the other errors),
 the bot tells you which side already went live and tapping Go Live again
-only retries the side that failed - it never double-posts. The draft expires
-30 minutes after the image was generated; after that, regenerate the image
-to publish it.
+only retries the side that failed (with the same caption/summary) - it never
+double-posts. The draft expires 30 minutes after the image was generated;
+after that, regenerate the image to publish it. Drafts are saved to
+`storage/publish_drafts.json`, so a bot restart doesn't lose a draft that's
+waiting for its caption or in review.
+
+**Testing without posting:** set `DRY_RUN=1` and Go Live logs the exact
+Instagram/website payload instead of posting. Tests:
+`venv/Scripts/python.exe tests/test_manual_ig_caption.py` (always dry-run,
+never touches the network).
 
 ## Notes
 

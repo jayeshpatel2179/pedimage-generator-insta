@@ -56,6 +56,25 @@ CAPTION_MODEL = "gpt-4o-mini"
 # review, then website summary review, then simultaneous Instagram+website Go Live.
 PUBLISH_DRAFT_EXPIRY_SECONDS = 30 * 60
 
+# Publish drafts are persisted here (JSON) so a draft awaiting its Instagram caption - or
+# sitting in review - survives a bot restart. Lives next to TEMP_DIR on purpose: the draft
+# is useless without its generated image, so both share the same lifetime.
+PUBLISH_DRAFTS_FILE = TEMP_DIR.parent / "publish_drafts.json"
+
+# Manual Instagram caption (bot/go_live/ig_caption.py). Limits verified against Meta's IG
+# media docs ("Maximum 2200 characters, 30 hashtags, and 20 @ tags"):
+# https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media
+IG_CAPTION_MAX_CHARS = 2200
+IG_CAPTION_MAX_HASHTAGS = 30
+IG_CAPTION_MAX_MENTIONS = 20
+# Appended to every manual caption at post time. Empty by default - the caption is posted
+# exactly as the editor typed it.
+IG_CAPTION_SUFFIX = ""
+
+# DRY_RUN=1 makes the posting layer (Instagram + website clients) log the exact outgoing
+# payload instead of posting. Off by default.
+DRY_RUN = os.getenv("DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on")
+
 # Website summary generation (bot/website/summary_generator.py).
 WEBSITE_SUMMARY_WORD_MIN = 50
 WEBSITE_SUMMARY_WORD_MAX = 60
