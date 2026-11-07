@@ -518,13 +518,36 @@ async def test_11_headline_without_waiting_draft(app):
     await send_text(app, "/cancel")
 
 
+async def test_12_out_of_credits_message(app):
+    import httpx
+    from openai import RateLimitError
+
+    async def no_credits(photo_path, prompt):
+        response = httpx.Response(429, request=httpx.Request("POST", "https://api.openai.com/v1/images/edits"))
+        body = {"message": "You have no credits remaining.", "type": "insufficient_quota",
+                "param": None, "code": "credit_balance_exhausted"}
+        raise RateLimitError("You have no credits remaining.", response=response, body=body)
+
+    conversation_mod.generate_image = no_credits
+    try:
+        await send_text(app, "Some headline")
+        await tap(app, "layout:left", TG.new_id())
+        await send_photo(app)
+    finally:
+        conversation_mod.generate_image = fake_generate_image
+    last = TG.texts_sent()[-1]
+    assert last.startswith("⚠️ Insufficient OpenAI credits"), last
+    assert "platform.openai.com/settings/organization/billing" in last
+    assert not state.all_drafts()
+
+
 async def main() -> int:
     app = await new_app()
     tests = [
         test_1_normal_path, test_2_special_characters, test_3_validation, test_4_cancel_while_waiting,
         test_5_second_image_while_waiting, test_6_restart_while_waiting, test_7_edit_flow,
         test_8_instagram_failure_then_retry, test_9_mandatory_guard, test_10_untouched_files,
-        test_11_headline_without_waiting_draft,
+        test_11_headline_without_waiting_draft, test_12_out_of_credits_message,
     ]
     failures = 0
     for test in tests:

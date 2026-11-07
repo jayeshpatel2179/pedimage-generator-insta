@@ -1,6 +1,7 @@
 import logging
 
 from openai import BadRequestError as OpenAIBadRequestError
+from openai import RateLimitError as OpenAIRateLimitError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationHandlerStop, ContextTypes, ConversationHandler
@@ -75,6 +76,15 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     raise ApplicationHandlerStop(ConversationHandler.END)
 
 
+def _is_out_of_credits(exc: Exception) -> bool:
+    # OpenAI reports an empty prepaid balance as a 429, distinct from ordinary rate limiting:
+    # code "credit_balance_exhausted" (or the older "insufficient_quota"), type "insufficient_quota".
+    if not isinstance(exc, OpenAIRateLimitError):
+        return False
+    body_type = exc.body.get("type") if isinstance(exc.body, dict) else None
+    return exc.code in ("credit_balance_exhausted", "insufficient_quota") or body_type == "insufficient_quota"
+
+
 async def _generate_and_send(context, chat_id, user_id, photo_file, headline, emphasis, layout_side) -> None:
     input_path = None
     output_path = None
@@ -123,6 +133,13 @@ async def _generate_and_send(context, chat_id, user_id, photo_file, headline, em
                 f"⚠️ OpenAI's safety system blocked this generation - flagged as "
                 f"'{reason}'{stage_text}. This is a policy block, not a network hiccup - "
                 "try a different photo and/or reword the headline, then send it again."
+            )
+        elif _is_out_of_credits(exc):
+            text = (
+                "⚠️ Insufficient OpenAI credits - the OpenAI account has no credits left, so "
+                "no images can be generated. Add credits at "
+                "https://platform.openai.com/settings/organization/billing and then send the "
+                "headline again (no bot restart needed)."
             )
         else:
             text = (
